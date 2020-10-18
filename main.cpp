@@ -37,7 +37,7 @@ int main(int argc, char* argv[]) {
 	mesh.read("opt_pmesh000.obj");
 
 	// read path
-	std::ifstream ifs("opt_pmesh_path2.idx");
+	std::ifstream ifs("opt_pmesh000_path2.idx");
 	std::vector<SurfaceMesh::Vertex> original_path;
 	while (!ifs.eof()) {
 		int id;
@@ -46,8 +46,9 @@ int main(int argc, char* argv[]) {
 	}
 	path2vtk("originalPath.vtk", mesh, original_path);
 
-	std::chrono::system_clock::time_point start = std::chrono::system_clock::now();
 	Geodesic geodesic(mesh, original_path);
+	int size = original_path.size();
+	std::chrono::system_clock::time_point start = std::chrono::system_clock::now();
 	double dist = geodesic.makePathGeodesic();
 	std::chrono::system_clock::time_point end = std::chrono::system_clock::now();
 	std::cout << "duration: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms" << std::endl;

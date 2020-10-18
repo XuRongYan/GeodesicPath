@@ -46,11 +46,15 @@ public:
 
 	double getAlpha() const;
 
-	bool isFlexible() const;
-
 	bool empty();
 
+	bool isFlexible() const;
+
 	void setFlexible(bool flexible);
+
+	bool isFirst() const;
+
+	void setFirst(bool first);
 
 	const std::vector<bool> &getDeletedArc() const;
 
@@ -84,14 +88,12 @@ public:
 private:
 	void init();
 
-public:
-	Joint *prev_{nullptr}, *next_{nullptr};		// 将Joint维护为一个双向链表
-
 private:
 	SurfaceMesh *mesh_;
 	SurfaceMesh::Vertex a_, b_, c_;
 	size_t path_idx_{0};
 	bool flexible_{false};
+	bool first_{true};
 	double alpha_{0.0};
 	std::vector<double> betas_;
 	std::vector<SurfaceMesh::Vertex> outer_arc_;

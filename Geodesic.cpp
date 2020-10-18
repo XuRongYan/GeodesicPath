@@ -92,6 +92,15 @@ std::pair<double, std::vector<SurfaceMesh::Vertex>> Joint::computeAlphaAndOuterA
 	while (next != tower) {
 		SurfaceMesh::Vertex v1 = mesh->to_vertex(start);
 		SurfaceMesh::Vertex v2 = mesh->to_vertex(next);
+		if (mesh->is_boundary(mesh->edge(next)) && v2 != end) {
+			start = mesh->find_halfedge(b, c);
+			next = mesh->ccw_rotated_halfedge(start);
+			outer_arc.clear();
+			outer_arc.emplace_back(mesh->to_vertex(start));
+			tower = start;
+			end = mesh->to_vertex(tower) == a ? c : a;
+			continue;
+		}
 		outer_arc.emplace_back(v2);
 		if (v2 == end) break;
 		start = next;
@@ -146,7 +155,8 @@ void Joint::updateOuterArc() {
  * 条件4：当前joint是否为最左的joint
  */
 void Joint::updateFlexibleState() {
-	flexible_ = alpha_ < M_PI - 1e-6 && outer_arc_.size() >= 3 && !flippable_edges_.empty();
+	flexible_ = alpha_ < M_PI - 1e-6;
+	if (!first_ && (outer_arc_.size() < 3 || flippable_edges_.empty())) flexible_ = false;
 	if (!flexible_) return;
 	auto is_path = mesh_->get_edge_property<bool>("e:is_path");
 	if (is_path) {
@@ -241,6 +251,14 @@ void Joint::setPathIdx(size_t pathIdx) {
 	path_idx_ = pathIdx;
 }
 
+bool Joint::isFirst() const {
+	return first_;
+}
+
+void Joint::setFirst(bool first) {
+	Joint::first_ = first;
+}
+
 std::ostream &operator<<(std::ostream &os, const Joint &joint) {
 	os << "path idx:" << joint.path_idx_ << " a_: " << joint.a_ << " b_: " << joint.b_ << " c_: " << joint.c_ << " flexible_: " << joint.flexible_
 	   << " alpha_: " << joint.alpha_;
@@ -256,9 +274,9 @@ Geodesic::Geodesic(const SurfaceMesh &mesh, const std::vector<SurfaceMesh::Verte
 }
 
 double Geodesic::makePathGeodesic() {
-	// std::cout << "compute path..." << std::endl;
+	std::cout << "compute path..." << std::endl;
 	size_t iter = 0;
-	// std::cout << "iter = " << iter << std::endl;
+	std::cout << "iter = " << iter << std::endl;
 	while (!joints_.empty()) {
 		auto joint = joints_.top();
 		joints_.pop();
@@ -301,7 +319,7 @@ void Geodesic::computeJoints(int start, int end) {
 	for (size_t i = start; i < end; i++) {
 		Joint joint(&mesh_, i, path_[i - 1], path_[i], path_[i + 1]);
 		joint.updateFlexibleState();
-		// std::cout << joint << std::endl;
+		std::cout << joint << std::endl;
 		vec_joints_[path_[i].idx()] = joint;
 		// 构建双向链表
 		if (joint.isFlexible()) {
@@ -310,11 +328,6 @@ void Geodesic::computeJoints(int start, int end) {
 	}
 	for (size_t i = end; i < path_.size(); i++) {
 		vec_joints_[path_[i].idx()].setPathIdx(i);
-	}
-	// 有尾指针
-	if (end < path_.size() && vec_joints_[end].isFlexible()) {
-		vec_joints_[path_[end - 1].idx()].next_ = &vec_joints_[path_[end].idx()];
-		vec_joints_[path_[end].idx()].prev_ = &vec_joints_[path_[end - 1].idx()];
 	}
 }
 
@@ -327,12 +340,13 @@ Joint Geodesic::flipOut(Joint &joint) {
 			joint.deleteArcPoint(p.first);
 		}
 		joint.updateOuterArc();
+		joint.setFirst(false);
 	}
 	return joint;
 }
 
 void Geodesic::updatePath(const Joint &joint) {
-	// std::cout << "update path: start = " << joint.getA() << " end = " << joint.getC() << std::endl;
+	std::cout << "update path: start = " << joint.getA() << " end = " << joint.getC() << std::endl;
 	// 最佳的outer arc作为新的路径
 	auto new_joint = joint.getOuterArc();
 	int start = joint.getPathIdx(), end = start + 2;
@@ -350,10 +364,10 @@ void Geodesic::updatePath(const Joint &joint) {
 	for (size_t i = end; i < path_.size(); i++)
 		new_path.emplace_back(path_[i]);
 	path_ = new_path;
-//	for (auto v : path_) {
-//		std::cout << v.idx() << " ";
-//	}
-//	std::cout << std::endl;
+	for (auto v : path_) {
+		std::cout << v.idx() << " ";
+	}
+	std::cout << std::endl;
 	updatePathState(joint);
 	start -= 2;
 	computeJoints(start, start + new_joint.size() + 2);
