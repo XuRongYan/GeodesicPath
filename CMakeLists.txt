@@ -7,6 +7,8 @@ set(INCLUDE /usr/local/include)
 set(SURFACE_MESH /usr/local/include/SurfaceMesh)
 set(SURFACE_MESH_LIB /usr/local/lib/libSurfaceMesh.dylib)
 
+set(GOOGLETEST_VERSION 1.8.0)
+
 include_directories(${SURFACE_MESH} ${INCLUDE})
 
 # Eigen
@@ -18,7 +20,12 @@ else ()
     return()
 endif ()
 
+# google test
+find_package(GTest REQUIRED)
+
 aux_source_directory(. DIR_SRC)
+
+add_subdirectory(test)
 
 add_executable(${PROJECT_NAME} ${DIR_SRC})
 

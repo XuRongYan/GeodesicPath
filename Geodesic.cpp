@@ -27,6 +27,7 @@ std::pair<double, std::vector<SurfaceMesh::Vertex>> Joint::computeAlphaAndOuterA
 																				   const SurfaceMesh::Vertex &a,
 																				   const SurfaceMesh::Vertex &b,
 																				   const SurfaceMesh::Vertex &c) {
+	if (mesh->is_boundary(b)) return computeAlphaAndOuterArcOnBound(mesh, a, b, c);
 	bool flag = false;
 	double alpha1 = 0, alpha2 = 0;
 	std::vector<SurfaceMesh::Vertex> side1, side2;
@@ -35,10 +36,10 @@ std::pair<double, std::vector<SurfaceMesh::Vertex>> Joint::computeAlphaAndOuterA
 	side2.emplace_back(c);
 	// use halfedge b->a as start edge.
 	SurfaceMesh::Halfedge start = mesh->find_halfedge(b, a);
-	SurfaceMesh::Halfedge next{};
-	while (next != start) {
+	SurfaceMesh::Halfedge next = mesh->ccw_rotated_halfedge(start);
+	SurfaceMesh::Halfedge tower = start;
+	while (next != tower) {
 		// traverse halfedge counterclockwise.
-		next = mesh->ccw_rotated_halfedge(start);
 		SurfaceMesh::Vertex v1 = mesh->to_vertex(start);
 		SurfaceMesh::Vertex v2 = mesh->to_vertex(next);
 		assert(v1 != v2);
@@ -55,8 +56,50 @@ std::pair<double, std::vector<SurfaceMesh::Vertex>> Joint::computeAlphaAndOuterA
 		// if come across c, switch the angle counter and outer arc path.
 		if (v2 == c) flag = true;
 		start = next;
+		next = mesh->ccw_rotated_halfedge(start);
 	}
+
+	const auto &p1 = mesh->position(a_);
+	const auto &p2 = mesh->position(side2.back());
+	side2.emplace_back(a_);
+	alpha2 += angle(p1 - pb, p2 - pb);
+	std::reverse(side2.begin(), side2.end());
+
 	return alpha1 < alpha2 ? std::make_pair(alpha1, side1) : std::make_pair(alpha2, side2);
+}
+
+std::pair<double, std::vector<SurfaceMesh::Vertex>> Joint::computeAlphaAndOuterArcOnBound(const SurfaceMesh *mesh,
+																						  const SurfaceMesh::Vertex &a,
+																						  const SurfaceMesh::Vertex &b,
+																						  const SurfaceMesh::Vertex &c) {
+	assert(mesh->is_boundary(b));
+	auto is_path = mesh->get_edge_property<bool>("e:is_path");
+	const Point &p1 = mesh->position(a);
+	const Point &p2 = mesh->position(b);
+	const Point &p3 = mesh->position(c);
+	double alpha = angle(p1 - p2, p3 - p2);
+	std::vector<SurfaceMesh::Vertex> outer_arc;
+	auto start = mesh->find_halfedge(b, a);
+	auto next = mesh->ccw_rotated_halfedge(start);
+	// 1. 若逆时针旋转起始就遇到两个boundary
+	if (mesh->is_boundary(mesh->edge(start)) && mesh->is_boundary(mesh->edge(next))) {
+		start = mesh->find_halfedge(b, c);
+		next = mesh->ccw_rotated_halfedge(start);
+	}
+	auto tower = start;
+	auto end = mesh->to_vertex(tower) == a ? c : a;
+	outer_arc.emplace_back(mesh->to_vertex(start));
+	while (next != tower) {
+		SurfaceMesh::Vertex v1 = mesh->to_vertex(start);
+		SurfaceMesh::Vertex v2 = mesh->to_vertex(next);
+		outer_arc.emplace_back(v2);
+		if (v2 == end) break;
+		start = next;
+		next = mesh->ccw_rotated_halfedge(start);
+	}
+
+	if (outer_arc[0] == c) std::reverse(outer_arc.begin(), outer_arc.end());
+	return {alpha, outer_arc};
 }
 
 void Joint::computeFlippableEdges() {
@@ -91,8 +134,9 @@ void Joint::updateOuterArc() {
 	deleted_arc_.clear();
 	deleted_arc_.resize(outer_arc_.size());
 	alpha_ = updateAlpha();
-	updateFlexibleState();
 	computeFlippableEdges();
+	updateFlexibleState();
+
 }
 
 /**
@@ -102,17 +146,20 @@ void Joint::updateOuterArc() {
  * 条件4：当前joint是否为最左的joint
  */
 void Joint::updateFlexibleState() {
-	flexible_ = alpha_ < M_PI || outer_arc_.size() >= 3;
+	flexible_ = alpha_ < M_PI - 1e-6 && outer_arc_.size() >= 3 && !flippable_edges_.empty();
 	if (!flexible_) return;
 	auto is_path = mesh_->get_edge_property<bool>("e:is_path");
-	for (auto v : outer_arc_) {
-		if (v == a_ || v == c_) continue;
-		if (is_path[mesh_->find_edge(v, b_)]) flexible_ = false;
+	if (is_path) {
+		for (auto v : outer_arc_) {
+			if (v == a_ || v == c_) continue;
+			if (is_path[mesh_->find_edge(v, b_)]) flexible_ = false;
+		}
 	}
 }
 
 double Joint::updateAlpha() {
 	double sum = 0;
+	if (outer_arc_.size() < 3) return M_PI;
 	for (size_t i = 0; i < outer_arc_.size() - 1; i++) {
 		const Point &p1 = mesh_->position(outer_arc_[i]);
 		const Point &p2 = mesh_->position(outer_arc_[i + 1]);
@@ -140,6 +187,10 @@ const SurfaceMesh::Vertex &Joint::getC() const {
 
 double Joint::getAlpha() const {
 	return alpha_;
+}
+
+bool Joint::empty() {
+	return mesh_ == nullptr;
 }
 
 bool Joint::isFlexible() const {
@@ -186,6 +237,18 @@ size_t Joint::getPathIdx() const {
 	return path_idx_;
 }
 
+void Joint::setPathIdx(size_t pathIdx) {
+	path_idx_ = pathIdx;
+}
+
+std::ostream &operator<<(std::ostream &os, const Joint &joint) {
+	os << "path idx:" << joint.path_idx_ << " a_: " << joint.a_ << " b_: " << joint.b_ << " c_: " << joint.c_ << " flexible_: " << joint.flexible_
+	   << " alpha_: " << joint.alpha_;
+	return os;
+}
+
+
+
 //:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 
 Geodesic::Geodesic(const SurfaceMesh &mesh, const std::vector<SurfaceMesh::Vertex> &path) : mesh_(mesh), path_(path) {
@@ -193,12 +256,17 @@ Geodesic::Geodesic(const SurfaceMesh &mesh, const std::vector<SurfaceMesh::Verte
 }
 
 double Geodesic::makePathGeodesic() {
+	// std::cout << "compute path..." << std::endl;
+	size_t iter = 0;
+	// std::cout << "iter = " << iter << std::endl;
 	while (!joints_.empty()) {
 		auto joint = joints_.top();
 		joints_.pop();
 		if (!joint->isFlexible()) continue;
 		Joint joint_shorter = flipOut(*joint);
-		updatePath(*joint);
+		mesh_.write("flippedMesh.obj");
+		updatePath(joint_shorter);
+		iter++;
 	}
 	double dist = 0;
 	for (size_t i = 0; i < path_.size() - 1; i++) {
@@ -216,25 +284,32 @@ void Geodesic::init() {
 }
 
 void Geodesic::indexEdges() {
-	auto is_path = mesh_.add_edge_property<bool>("e:is_path");
+	SurfaceMesh::Edge_property<bool> is_path = mesh_.get_edge_property<bool>("e:is_path");
+	if (!is_path) {
+		is_path = mesh_.add_edge_property<bool>("e:is_path");
+	}
 	for (size_t i = 0; i < path_.size() - 1; i++) {
-		is_path[mesh_.find_edge(path_[i], path_[i + 1])] = true;
+		auto e = mesh_.find_edge(path_[i], path_[i + 1]);
+		assert(mesh_.is_valid(e));
+		is_path[e] = true;
 	}
 }
 
-void Geodesic::computeJoints(size_t start, size_t end) {
+void Geodesic::computeJoints(int start, int end) {
+	if (start < 1) start = 1;
+	if (end > path_.size() - 1) end = path_.size() - 1;
 	for (size_t i = start; i < end; i++) {
 		Joint joint(&mesh_, i, path_[i - 1], path_[i], path_[i + 1]);
+		joint.updateFlexibleState();
+		// std::cout << joint << std::endl;
 		vec_joints_[path_[i].idx()] = joint;
 		// 构建双向链表
-		if (i > 1) {
-			vec_joints_[path_[i].idx()].prev_ = &vec_joints_[path_[i - 1].idx()];
-			vec_joints_[path_[i - 1].idx()].next_ = &vec_joints_[path_[i].idx()];
-		}
-
 		if (joint.isFlexible()) {
 			joints_.push(&vec_joints_[path_[i].idx()]);
 		}
+	}
+	for (size_t i = end; i < path_.size(); i++) {
+		vec_joints_[path_[i].idx()].setPathIdx(i);
 	}
 	// 有尾指针
 	if (end < path_.size() && vec_joints_[end].isFlexible()) {
@@ -244,7 +319,6 @@ void Geodesic::computeJoints(size_t start, size_t end) {
 }
 
 Joint Geodesic::flipOut(Joint &joint) {
-	assert(joint.isFlexible());
 	while (joint.isFlexible()) {
 		auto edges = joint.getFlippableEdges();
 		for (const auto &p : edges) {
@@ -258,27 +332,57 @@ Joint Geodesic::flipOut(Joint &joint) {
 }
 
 void Geodesic::updatePath(const Joint &joint) {
+	// std::cout << "update path: start = " << joint.getA() << " end = " << joint.getC() << std::endl;
 	// 最佳的outer arc作为新的路径
 	auto new_joint = joint.getOuterArc();
-	size_t start = joint.getPathIdx(), end = start;
-	if (joint.prev_) {
-		joint.prev_->setFlexible(false);
-		start = joint.prev_->getPathIdx();
-	}
-	if (joint.next_) {
-		joint.next_->setFlexible(false);
-		end = joint.next_->getPathIdx();
-	}
+	int start = joint.getPathIdx(), end = start + 2;
+	if (start - 1 >= 0)
+		vec_joints_[start - 1].setFlexible(false);
+	if (start + 1 < vec_joints_.size())
+		vec_joints_[start + 1].setFlexible(false);
 	std::vector<SurfaceMesh::Vertex> new_path;
 	new_path.reserve(path_.size() + new_joint.size() - 3);
-	for (size_t i = 0; i < start; i++)
+	for (size_t i = 0; i < start - 1; i++)
 		new_path.emplace_back(path_[i]);
 	size_t new_end = new_path.size();
 	for (const auto &v : new_joint)
 		new_path.emplace_back(v);
-	for (size_t i = end + 1; i < path_.size(); i++)
+	for (size_t i = end; i < path_.size(); i++)
 		new_path.emplace_back(path_[i]);
 	path_ = new_path;
+//	for (auto v : path_) {
+//		std::cout << v.idx() << " ";
+//	}
+//	std::cout << std::endl;
+	updatePathState(joint);
+	start -= 2;
+	computeJoints(start, start + new_joint.size() + 2);
+}
+
+void Geodesic::updatePathState(const Joint &joint) {
+	auto is_path = mesh_.get_edge_property<bool>("e:is_path");
+	SurfaceMesh::Edge e1, e2;
+	e1 = mesh_.find_edge(joint.getA(), joint.getB());
+	e2 = mesh_.find_edge(joint.getB(), joint.getC());
+	assert(mesh_.is_valid(e1));
+	is_path[mesh_.find_edge(joint.getA(), joint.getB())] = false;
+	assert(mesh_.is_valid(e2));
+	is_path[mesh_.find_edge(joint.getB(), joint.getC())] = false;
 	indexEdges();
-	computeJoints(start, new_end);
+}
+
+const SurfaceMesh &Geodesic::getMesh() const {
+	return mesh_;
+}
+
+const std::priority_queue<Joint*, std::vector<Joint*>, cmp> &Geodesic::getJoints() const {
+	return joints_;
+}
+
+const std::vector<Joint> &Geodesic::getVecJoints() const {
+	return vec_joints_;
+}
+
+const std::vector<SurfaceMesh::Vertex> &Geodesic::getPath() const {
+	return path_;
 }
